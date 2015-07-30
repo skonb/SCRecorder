@@ -83,6 +83,8 @@
     if (_lastImage == nil) {
         AVAssetImageGenerator *imageGenerator = [[AVAssetImageGenerator alloc] initWithAsset:self.asset];
         imageGenerator.appliesPreferredTrackTransform = YES;
+        imageGenerator.requestedTimeToleranceAfter = kCMTimeZero;
+        imageGenerator.requestedTimeToleranceBefore = kCMTimeZero;
         
         NSError *error = nil;
         CGImageRef lastImage = [imageGenerator copyCGImageAtTime:self.duration actualTime:nil error:&error];
