@@ -767,7 +767,7 @@ static char* SCRecorderPhotoOptionsContext = "PhotoOptionsContext";
                             if (timeToWait > 0) {
                                 // Letting some time to for the AVAssetWriter to be ready
                                 //                                    NSLog(@"Too fast! Waiting %fs", timeToWait);
-                                [NSThread sleepForTimeInterval:timeToWait];
+//                                [NSThread sleepForTimeInterval:timeToWait];
                             }
                             
                             [self appendVideoSampleBuffer:sampleBuffer toRecordSession:recordSession duration:duration connection:connection completion:^(BOOL success) {
@@ -1413,41 +1413,33 @@ static char* SCRecorderPhotoOptionsContext = "PhotoOptionsContext";
 }
 
 - (void)setFrameRate:(CMTimeScale)framePerSeconds {
-    CMTime fps = CMTimeMake(1, framePerSeconds);
-    
+    AVCaptureDeviceFormat *selectedFormat = nil;
+    int32_t maxWidth = 0;
+    AVFrameRateRange *frameRateRange = nil;
     AVCaptureDevice * device = [self videoDevice];
-    
-    if (device != nil) {
-        NSError * error = nil;
-        BOOL formatSupported = [SCRecorderTools formatInRange:device.activeFormat frameRate:framePerSeconds];
+    for (AVCaptureDeviceFormat *format in [device formats]) {
         
-        if (formatSupported) {
-            if ([device respondsToSelector:@selector(activeVideoMinFrameDuration)]) {
-                if ([device lockForConfiguration:&error]) {
-                    device.activeVideoMaxFrameDuration = fps;
-                    device.activeVideoMinFrameDuration = fps;
-                    [device unlockForConfiguration];
-                } else {
-                    NSLog(@"Failed to set FramePerSeconds into camera device: %@", error.description);
-                }
-            } else {
-                AVCaptureConnection *connection = [self videoConnection];
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-                if (connection.isVideoMaxFrameDurationSupported) {
-                    connection.videoMaxFrameDuration = fps;
-                } else {
-                    NSLog(@"Failed to set FrameRate into camera device");
-                }
-                if (connection.isVideoMinFrameDurationSupported) {
-                    connection.videoMinFrameDuration = fps;
-                } else {
-                    NSLog(@"Failed to set FrameRate into camera device");
-                }
-#pragma clang diagnostic pop
+        for (AVFrameRateRange *range in format.videoSupportedFrameRateRanges) {
+            
+            CMFormatDescriptionRef desc = format.formatDescription;
+            CMVideoDimensions dimensions = CMVideoFormatDescriptionGetDimensions(desc);
+            int32_t width = dimensions.width;
+            
+            if (range.minFrameRate <= framePerSeconds && framePerSeconds <= range.maxFrameRate && width >= maxWidth) {
+                
+                selectedFormat = format;
+                frameRateRange = range;
+                maxWidth = width;
             }
-        } else {
-            NSLog(@"Unsupported frame rate %ld on current device format.", (long)framePerSeconds);
+        }
+    }
+    
+    if (selectedFormat) {
+        if ([device lockForConfiguration:nil]) {
+            device.activeFormat = selectedFormat;
+            device.activeVideoMinFrameDuration = CMTimeMake(1, framePerSeconds);
+            device.activeVideoMaxFrameDuration = CMTimeMake(1, framePerSeconds);
+            [device unlockForConfiguration];
         }
     }
 }

@@ -26,7 +26,7 @@
     
     if (size.width >= dimensions.width && size.height >= dimensions.height) {
         for (AVFrameRateRange *range in format.videoSupportedFrameRateRanges) {
-            if (range.minFrameDuration.timescale >= frameRate && range.maxFrameDuration.timescale <= frameRate) {
+            if (range.minFrameRate <= frameRate && range.maxFrameRate >= frameRate) {
                 return YES;
             }
         }

@@ -718,15 +718,15 @@ NSString * const SCRecordSessionDocumentDirectory = @"DocumentDirectory";
         duration = computedFrameDuration;
     }
     
-    //    CMTime timeVideo = _lastTimeVideo;
-    //    CMTime actualBufferDuration = duration;
-    //
-    //    if (CMTIME_IS_VALID(timeVideo)) {
-    //        while (CMTIME_COMPARE_INLINE(CMTimeSubtract(actualBufferTime, timeVideo), >=, CMTimeMultiply(actualBufferDuration, 2))) {
-    //            NSLog(@"Missing buffer");
-    //            timeVideo = CMTimeAdd(timeVideo, actualBufferDuration);
-    //        }
-    //    }
+        CMTime timeVideo = _lastTimeVideo;
+        CMTime actualBufferDuration = duration;
+    
+        if (CMTIME_IS_VALID(timeVideo)) {
+            while (CMTIME_COMPARE_INLINE(CMTimeSubtract(actualBufferTime, timeVideo), >=, CMTimeMultiply(actualBufferDuration, 2))) {
+                NSLog(@"Missing buffer");
+                timeVideo = CMTimeAdd(timeVideo, actualBufferDuration);
+            }
+        }
 
     if ([_videoInput isReadyForMoreMediaData]) {
         if ([_videoPixelBufferAdaptor appendPixelBuffer:videoPixelBuffer withPresentationTime:bufferTimestamp]) {
