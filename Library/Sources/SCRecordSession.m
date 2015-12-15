@@ -333,8 +333,8 @@ NSString * const SCRecordSessionDocumentDirectory = @"DocumentDirectory";
         
         if ([writer startWriting]) {
             //                NSLog(@"Starting session at %fs", CMTimeGetSeconds(_lastTime));
-            [writer startSessionAtSourceTime:kCMTimeZero];
-            _timeOffset = kCMTimeInvalid;
+            _timeOffset = kCMTimeZero;
+            _sessionStartTime = kCMTimeInvalid;
             //                _sessionStartedTime = _lastTime;
             //                _currentRecordDurationWithoutCurrentSegment = _currentRecordDuration;
             _recordSegmentReady = YES;
@@ -467,6 +467,7 @@ NSString * const SCRecordSessionDocumentDirectory = @"DocumentDirectory";
     _lastTimeAudio = kCMTimeInvalid;
     _lastTimeVideo = kCMTimeInvalid;
     _currentSegmentDuration = kCMTimeZero;
+    _sessionStartTime = kCMTimeInvalid;
     _movieFileOutput = nil;
 }
 
@@ -501,9 +502,7 @@ NSString * const SCRecordSessionDocumentDirectory = @"DocumentDirectory";
                 AVAssetWriter *writer = _assetWriter;
                 
                 if (writer != nil) {
-                    SCRecorder *recorder = self.recorder;
-                    
-                    BOOL currentSegmentEmpty = (!_currentSegmentHasVideo && recorder.videoEnabledAndReady) || (!_currentSegmentHasAudio && recorder.audioEnabledAndReady);
+                    BOOL currentSegmentEmpty = (!_currentSegmentHasVideo && !_currentSegmentHasAudio);
                     
                     if (currentSegmentEmpty) {
                         [writer cancelWriting];
@@ -518,7 +517,7 @@ NSString * const SCRecordSessionDocumentDirectory = @"DocumentDirectory";
                         }
                     } else {
                         //                NSLog(@"Ending session at %fs", CMTimeGetSeconds(_currentSegmentDuration));
-                        [writer endSessionAtSourceTime:_currentSegmentDuration];
+                        [writer endSessionAtSourceTime:CMTimeAdd(_currentSegmentDuration, _sessionStartTime)];
 
                         [writer finishWritingWithCompletionHandler: ^{
                             [self appendRecordSegmentUrl:writer.outputURL info:info error:writer.error completionHandler:completionHandler];
@@ -560,60 +559,61 @@ NSString * const SCRecordSessionDocumentDirectory = @"DocumentDirectory";
     }
 }
 
-- (void)mergeSegmentsUsingPreset:(NSString *)exportSessionPreset completionHandler:(void(^)(NSURL *outputUrl, NSError *error))completionHandler {
+- (AVAssetExportSession *)mergeSegmentsUsingPreset:(NSString *)exportSessionPreset completionHandler:(void(^)(NSURL *outputUrl, NSError *error))completionHandler {
+    __block AVAsset *asset = nil;
+    __block NSError *error = nil;
+    __block NSString *fileType = nil;
+    __block NSURL *outputUrl = nil;
+
     [self dispatchSyncOnSessionQueue:^{
-        NSString *fileType = [self _suggestedFileType];
+        fileType = [self _suggestedFileType];
         
         if (fileType == nil) {
-            if (completionHandler != nil) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    completionHandler(nil, [SCRecordSession createError:@"No output fileType was set"]);
-                });
-            }
+            error = [SCRecordSession createError:@"No output fileType was set"];
             return;
         }
         
         NSString *fileExtension = [self _suggestedFileExtension];
         if (fileExtension == nil) {
-            if (completionHandler != nil) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    completionHandler(nil, [SCRecordSession createError:@"Unable to figure out a file extension"]);
-                });
-            }
+            error = [SCRecordSession createError:@"Unable to figure out a file extension"];
             return;
         }
         
         NSString *filename = [NSString stringWithFormat:@"%@SCVideo-Merged.%@", _identifier, fileExtension];
-        NSURL *outputUrl = [SCRecordSessionSegment segmentURLForFilename:filename andDirectory:_segmentsDirectory];
+        outputUrl = [SCRecordSessionSegment segmentURLForFilename:filename andDirectory:_segmentsDirectory];
         [self removeFile:outputUrl];
 
         if (_segments.count == 0) {
-            if (completionHandler != nil) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    completionHandler(nil, [SCRecordSession createError:@"The session does not contains any record segment"]);
-                });
-            }
+            error = [SCRecordSession createError:@"The session does not contains any record segment"];
         } else {
-            AVAsset *asset = [self assetRepresentingSegments];
-            
-            dispatch_async(dispatch_get_main_queue(), ^{
-                AVAssetExportSession *exportSession = [AVAssetExportSession exportSessionWithAsset:asset presetName:exportSessionPreset];
-                exportSession.outputURL = outputUrl;
-                exportSession.outputFileType = fileType;
-                exportSession.shouldOptimizeForNetworkUse = YES;
-                [exportSession exportAsynchronouslyWithCompletionHandler:^{
-                    NSError *error = exportSession.error;
-                    
-                    if (completionHandler != nil) {
-                        dispatch_async(dispatch_get_main_queue(), ^{
-                            completionHandler(outputUrl, error);
-                        });
-                    }
-                }];
-            });
-
+            asset = [self assetRepresentingSegments];
         }
     }];
+
+    if (error != nil) {
+        if (completionHandler != nil) {
+            completionHandler(nil, error);
+        }
+
+        return nil;
+    } else {
+        AVAssetExportSession *exportSession = [AVAssetExportSession exportSessionWithAsset:asset presetName:exportSessionPreset];
+        exportSession.outputURL = outputUrl;
+        exportSession.outputFileType = fileType;
+        exportSession.shouldOptimizeForNetworkUse = YES;
+        [exportSession exportAsynchronouslyWithCompletionHandler:^{
+            NSError *error = exportSession.error;
+
+            if (completionHandler != nil) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    completionHandler(outputUrl, error);
+                });
+            }
+        }];
+
+        return exportSession;
+
+    }
 }
 
 - (void)finishEndSession:(NSError*)mergeError completionHandler:(void (^)(NSError *))completionHandler {
@@ -659,56 +659,48 @@ NSString * const SCRecordSessionDocumentDirectory = @"DocumentDirectory";
 }
 
 - (void)appendAudioSampleBuffer:(CMSampleBufferRef)audioSampleBuffer completion:(void (^)(BOOL))completion {
-    CMTime actualBufferTime = CMSampleBufferGetPresentationTimeStamp(audioSampleBuffer);
-    
-    if (CMTIME_IS_INVALID(_timeOffset)) {
-        _timeOffset = CMTimeSubtract(actualBufferTime, _currentSegmentDuration);
-    }
-    
+    [self _startSessionIfNeededAtTime:CMSampleBufferGetPresentationTimeStamp(audioSampleBuffer)];
+
     CMTime duration = CMSampleBufferGetDuration(audioSampleBuffer);
     CMSampleBufferRef adjustedBuffer = [self adjustBuffer:audioSampleBuffer withTimeOffset:_timeOffset andDuration:duration];
     
     CMTime presentationTime = CMSampleBufferGetPresentationTimeStamp(adjustedBuffer);
     CMTime lastTimeAudio = CMTimeAdd(presentationTime, duration);
-    
-    BOOL appended = CMTIME_COMPARE_INLINE(presentationTime, >=, kCMTimeZero);
-    
-    if (appended) {
-        CFRetain(adjustedBuffer);
-        dispatch_async(_audioQueue, ^{
-            if ([_audioInput isReadyForMoreMediaData] && [_audioInput appendSampleBuffer:adjustedBuffer]) {
-                _lastTimeAudio = lastTimeAudio;
-                
-                if (!_currentSegmentHasVideo) {
-                    _currentSegmentDuration = lastTimeAudio;
-                }
-                
-                //            NSLog(@"Appending audio at %fs (buffer: %fs)", CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(adjustedBuffer)), CMTimeGetSeconds(actualBufferTime));
-                _currentSegmentHasAudio = YES;
-                
-                completion(YES);
-            } else {
-                completion(NO);
+
+    CFRetain(adjustedBuffer);
+    dispatch_async(_audioQueue, ^{
+        if ([_audioInput isReadyForMoreMediaData] && [_audioInput appendSampleBuffer:adjustedBuffer]) {
+            _lastTimeAudio = lastTimeAudio;
+
+            if (!_currentSegmentHasVideo) {
+                _currentSegmentDuration = CMTimeSubtract(lastTimeAudio, _sessionStartTime);
             }
-            
-            CFRelease(adjustedBuffer);
-        });
-    } else {
-        completion(NO);
+
+            //            NSLog(@"Appending audio at %fs (buffer: %fs)", CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(adjustedBuffer)), CMTimeGetSeconds(actualBufferTime));
+            _currentSegmentHasAudio = YES;
+
+            completion(YES);
+        } else {
+            completion(NO);
+        }
+
+        CFRelease(adjustedBuffer);
+    });
+}
+
+- (void)_startSessionIfNeededAtTime:(CMTime)time
+{
+    if (CMTIME_IS_INVALID(_sessionStartTime)) {
+        _sessionStartTime = time;
+        [_assetWriter startSessionAtSourceTime:time];
     }
-    
-    CFRelease(adjustedBuffer);
 }
 
 - (void)appendVideoPixelBuffer:(CVPixelBufferRef)videoPixelBuffer atTime:(CMTime)actualBufferTime duration:(CMTime)duration completion:(void (^)(BOOL))completion {
-    CMTime bufferTimestamp;
-    
-    if (CMTIME_IS_INVALID(_timeOffset)) {
-        _timeOffset = CMTimeSubtract(actualBufferTime, _currentSegmentDuration);
-        //            NSLog(@"Recomputed time offset to: %fs", CMTimeGetSeconds(_timeOffset));
-    }
-    bufferTimestamp = CMTimeSubtract(actualBufferTime, _timeOffset);
-    
+    [self _startSessionIfNeededAtTime:actualBufferTime];
+
+    CMTime bufferTimestamp = CMTimeSubtract(actualBufferTime, _timeOffset);
+
     CGFloat videoTimeScale = _videoConfiguration.timeScale;
     if (videoTimeScale != 1.0) {
         CMTime computedFrameDuration = CMTimeMultiplyByFloat64(duration, videoTimeScale);
@@ -730,7 +722,7 @@ NSString * const SCRecordSessionDocumentDirectory = @"DocumentDirectory";
 
     if ([_videoInput isReadyForMoreMediaData]) {
         if ([_videoPixelBufferAdaptor appendPixelBuffer:videoPixelBuffer withPresentationTime:bufferTimestamp]) {
-            _currentSegmentDuration = CMTimeAdd(bufferTimestamp, duration);
+            _currentSegmentDuration = CMTimeSubtract(CMTimeAdd(bufferTimestamp, duration), _sessionStartTime);
             _lastTimeVideo = actualBufferTime;
             
             _currentSegmentHasVideo = YES;
@@ -772,7 +764,11 @@ NSString * const SCRecordSessionDocumentDirectory = @"DocumentDirectory";
     return time;
 }
 
-- (void)appendSegmentsToComposition:(AVMutableComposition *)composition {
+- (void)appendSegmentsToComposition:(AVMutableComposition * __nonnull)composition {
+    [self appendSegmentsToComposition:composition audioMix:nil];
+}
+
+- (void)appendSegmentsToComposition:(AVMutableComposition *)composition audioMix:(AVMutableAudioMix *)audioMix {
     [self dispatchSyncOnSessionQueue:^{
         AVMutableCompositionTrack *audioTrack = nil;
         AVMutableCompositionTrack *videoTrack = nil;
@@ -826,12 +822,28 @@ NSString * const SCRecordSessionDocumentDirectory = @"DocumentDirectory";
     }];
 }
 
+- (AVPlayerItem *)playerItemRepresentingSegments {
+    __block AVPlayerItem *playerItem = nil;
+    [self dispatchSyncOnSessionQueue:^{
+        if (_segments.count == 1) {
+            SCRecordSessionSegment *segment = _segments.firstObject;
+            playerItem = [AVPlayerItem playerItemWithAsset:segment.asset];
+        } else {
+            AVMutableComposition *composition = [AVMutableComposition composition];
+            [self appendSegmentsToComposition:composition];
+
+            playerItem = [AVPlayerItem playerItemWithAsset:composition];
+        }
+    }];
+
+    return playerItem;
+}
+
 - (AVAsset *)assetRepresentingSegments {
     __block AVAsset *asset = nil;
     [self dispatchSyncOnSessionQueue:^{
         if (_segments.count == 1) {
             SCRecordSessionSegment *segment = _segments.firstObject;
-            NSLog(@"URL: %@", segment.url);
             asset = segment.asset;
         } else {
             AVMutableComposition *composition = [AVMutableComposition composition];

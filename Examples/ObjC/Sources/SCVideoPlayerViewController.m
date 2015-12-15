@@ -10,9 +10,10 @@
 #import "SCEditVideoViewController.h"
 #import "SCWatermarkOverlayView.h"
 
-@interface SCVideoPlayerViewController () {
-    SCPlayer *_player;
-}
+@interface SCVideoPlayerViewController ()
+
+@property (strong, nonatomic) SCAssetExportSession *exportSession;
+@property (strong, nonatomic) SCPlayer *player;
 
 @end
 
@@ -34,6 +35,7 @@
     self.filterSwitcherView = nil;
     [_player pause];
     _player = nil;
+    [self cancelSaveToCameraRoll];
 }
 
 - (SCFilter *)createAnimatedFilter {
@@ -79,7 +81,6 @@
 	_player = [SCPlayer player];
     
     if ([[NSProcessInfo processInfo] activeProcessorCount] > 1) {
-        self.filterSwitcherView.refreshAutomaticallyWhenScrolling = NO;
         self.filterSwitcherView.contentMode = UIViewContentModeScaleAspectFill;
         
         SCFilter *emptyFilter = [SCFilter emptyFilter];
@@ -96,7 +97,7 @@
                                                  [SCFilter filterWithContentsOfURL:[[NSBundle mainBundle] URLForResource:@"a_filter" withExtension:@"cisf"]],
                                                  [self createAnimatedFilter]
                                                  ];
-        _player.CIImageRenderer = self.filterSwitcherView;
+        _player.SCImageView = self.filterSwitcherView;
         [self.filterSwitcherView addObserver:self forKeyPath:@"selectedFilter" options:NSKeyValueObservingOptionNew context:nil];
     } else {
         SCVideoPlayerView *playerView = [[SCVideoPlayerView alloc] initWithPlayer:_player];
@@ -149,16 +150,6 @@
     }
 }
 
-- (void)video:(NSString *)videoPath didFinishSavingWithError:(NSError *)error contextInfo: (void *) contextInfo {
-    [[UIApplication sharedApplication] endIgnoringInteractionEvents];
-
-    if (error == nil) {
-        [[[UIAlertView alloc] initWithTitle:@"Saved to camera roll" message:@"" delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil] show];
-    } else {
-        [[[UIAlertView alloc] initWithTitle:@"Failed to save" message:error.localizedDescription delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil] show];
-    }
-}
-
 - (void)assetExportSessionDidProgress:(SCAssetExportSession *)assetExportSession {
     dispatch_async(dispatch_get_main_queue(), ^{
         float progress = assetExportSession.progress;
@@ -169,20 +160,40 @@
     });
 }
 
+- (void)cancelSaveToCameraRoll
+{
+    [_exportSession cancelExport];
+}
+
+- (IBAction)cancelTapped:(id)sender {
+    [self cancelSaveToCameraRoll];
+}
+
+- (void)_addActionToAlertController:(UIAlertController *)alertController forType:(SCContextType)contextType withName:(NSString *)name {
+    if ([SCContext supportsType:contextType]) {
+        UIAlertActionStyle style = (self.filterSwitcherView.contextType != contextType ? UIAlertActionStyleDefault : UIAlertActionStyleDestructive);
+        UIAlertAction *action = [UIAlertAction actionWithTitle:name style:style handler:^(UIAlertAction * _Nonnull action) {
+            self.filterSwitcherView.contextType = contextType;
+        }];
+        [alertController addAction:action];
+    }
+}
+
+- (IBAction)changeRenderingModeTapped:(id)sender {
+    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"Change video rendering mode" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+    [self _addActionToAlertController:alertController forType:SCContextTypeAuto withName:@"Auto"];
+    [self _addActionToAlertController:alertController forType:SCContextTypeMetal withName:@"Metal"];
+    [self _addActionToAlertController:alertController forType:SCContextTypeEAGL withName:@"EAGL"];
+    [self _addActionToAlertController:alertController forType:SCContextTypeCoreGraphics withName:@"Core Graphics"];
+    [alertController addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+
+    [self presentViewController:alertController animated:YES completion:nil];
+}
+
 - (void)saveToCameraRoll {
+    self.navigationItem.rightBarButtonItem.enabled = NO;
     SCFilter *currentFilter = [self.filterSwitcherView.selectedFilter copy];
     [_player pause];
-    
-    void(^completionHandler)(NSURL *url, NSError *error) = ^(NSURL *url, NSError *error) {
-        if (error == nil) {
-            [[UIApplication sharedApplication] beginIgnoringInteractionEvents];
-            UISaveVideoAtPathToSavedPhotosAlbum(url.path, self, @selector(video:didFinishSavingWithError:contextInfo:), nil);
-        } else {
-            [[[UIAlertView alloc] initWithTitle:@"Failed to save" message:error.localizedDescription delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil] show];
-        }
-    };
-    
-    [[UIApplication sharedApplication] beginIgnoringInteractionEvents];
 
     SCAssetExportSession *exportSession = [[SCAssetExportSession alloc] initWithAsset:self.recordSession.assetRepresentingSegments];
     exportSession.videoConfiguration.filter = currentFilter;
@@ -192,6 +203,8 @@
     exportSession.outputUrl = self.recordSession.outputUrl;
     exportSession.outputFileType = AVFileTypeMPEG4;
     exportSession.delegate = self;
+    exportSession.contextType = SCContextTypeAuto;
+    self.exportSession = exportSession;
     
     self.exportView.hidden = NO;
     self.exportView.alpha = 0;
@@ -206,20 +219,46 @@
     SCWatermarkOverlayView *overlay = [SCWatermarkOverlayView new];
     overlay.date = self.recordSession.date;
     exportSession.videoConfiguration.overlay = overlay;
-        
-    CFTimeInterval time = CACurrentMediaTime();
-    [exportSession exportAsynchronouslyWithCompletionHandler:^{
-        [_player play];
+    NSLog(@"Starting exporting");
 
-        NSLog(@"Completed compression in %fs", CACurrentMediaTime() - time);
-        
-        [[UIApplication sharedApplication] endIgnoringInteractionEvents];
-        
-        [UIView animateWithDuration:0.3 animations:^{
-            self.exportView.alpha = 0;
-        }];
-        
-        completionHandler(exportSession.outputUrl, exportSession.error);
+    CFTimeInterval time = CACurrentMediaTime();
+    __weak typeof(self) wSelf = self;
+    [exportSession exportAsynchronouslyWithCompletionHandler:^{
+        __strong typeof(self) strongSelf = wSelf;
+
+        if (!exportSession.cancelled) {
+            NSLog(@"Completed compression in %fs", CACurrentMediaTime() - time);
+        }
+
+        if (strongSelf != nil) {
+            [strongSelf.player play];
+            strongSelf.exportSession = nil;
+            strongSelf.navigationItem.rightBarButtonItem.enabled = YES;
+
+            [UIView animateWithDuration:0.3 animations:^{
+                strongSelf.exportView.alpha = 0;
+            }];
+        }
+
+        NSError *error = exportSession.error;
+        if (exportSession.cancelled) {
+            NSLog(@"Export was cancelled");
+        } else if (error == nil) {
+            [[UIApplication sharedApplication] beginIgnoringInteractionEvents];
+            [exportSession.outputUrl saveToCameraRollWithCompletion:^(NSString * _Nullable path, NSError * _Nullable error) {
+                [[UIApplication sharedApplication] endIgnoringInteractionEvents];
+
+                if (error == nil) {
+                    [[[UIAlertView alloc] initWithTitle:@"Saved to camera roll" message:@"" delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil] show];
+                } else {
+                    [[[UIAlertView alloc] initWithTitle:@"Failed to save" message:error.localizedDescription delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil] show];
+                }
+            }];
+        } else {
+            if (!exportSession.cancelled) {
+                [[[UIAlertView alloc] initWithTitle:@"Failed to save" message:error.localizedDescription delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil] show];
+            }
+        }
     }];
 }
 

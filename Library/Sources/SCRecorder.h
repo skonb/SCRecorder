@@ -1,6 +1,6 @@
 //
-//  SCNewCamera.h
-//  SCAudioVideoRecorder
+//  SCRecorder.h
+//  SCRecorder
 //
 //  Created by Simon CORSIN on 27/03/14.
 //  Copyright (c) 2014 rFlex. All rights reserved.
@@ -10,19 +10,16 @@
 #import <Foundation/Foundation.h>
 #import <AVFoundation/AVFoundation.h>
 #import "SCRecordSession.h"
-#import "SCSampleBufferHolder.h"
-#import "SCVideoPlayerView.h"
-#import "SCPlayer.h"
 #import "SCAssetExportSession.h"
 #import "SCImageView.h"
-#import "SCSwipeableFilterView.h"
-#import "SCRecorderToolsView.h"
 #import "SCVideoConfiguration.h"
 #import "SCAudioConfiguration.h"
 #import "SCPhotoConfiguration.h"
 #import "SCRecorderTools.h"
 #import "SCRecorderDelegate.h"
-#import "SCContext.h"
+
+// Convenience
+#import "SCRecorderHeader.h"
 
 @interface SCRecorder : NSObject<AVCaptureAudioDataOutputSampleBufferDelegate, AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureFileOutputRecordingDelegate>
 
@@ -77,6 +74,16 @@
 @property (assign, nonatomic) CGFloat videoZoomFactor;
 
 /**
+ The max zoom factor for the current device
+ */
+@property (assign, nonatomic) CGFloat maxVideoZoomFactor;
+
+/**
+ Returns the max zoom factor for the given device
+ */
+- (CGFloat)maxVideoZoomFactorForDevice:(AVCaptureDevicePosition)devicePosition;
+
+/**
  Whether the zoom should be reset whenever the device changes.
  */
 @property (assign, nonatomic) BOOL resetZoomOnChangeDevice;
@@ -128,7 +135,7 @@
  If set, this render will receive every received frames as CIImage.
  Can be useful for displaying a real time filter for example.
  */
-@property (strong, nonatomic) id<CIImageRenderer> __nullable CIImageRenderer;
+@property (strong, nonatomic) SCImageView *__nullable SCImageView;
 
 /**
  Set the delegate used to receive messages for the SCRecorder
@@ -144,6 +151,12 @@
  The video orientation. This is automatically set if autoSetVideoOrientation is enabled
  */
 @property (assign, nonatomic) AVCaptureVideoOrientation videoOrientation;
+
+/**
+ The video stabilization mode to use.
+ Default is AVCaptureVideoStabilizationModeStandard
+ */
+@property (assign, nonatomic) AVCaptureVideoStabilizationMode videoStabilizationMode;
 
 /**
  If true, the videoOrientation property will be set automatically
@@ -188,6 +201,12 @@
  Default is YES
  */
 @property (assign, nonatomic) BOOL initializeSessionLazily;
+
+/**
+ If enabled, flips the video about its vertical axis and produce a mirror-image effect,
+ when recording with the front camera.
+ */
+@property (assign, nonatomic) BOOL mirrorOnFrontCamera;
 
 /**
  If enabled, mirrored video buffers like when using a front camera
