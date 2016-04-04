@@ -87,7 +87,12 @@
         imageGenerator.requestedTimeToleranceBefore = kCMTimeZero;
         
         NSError *error = nil;
-        CGImageRef lastImage = [imageGenerator copyCGImageAtTime:self.duration actualTime:nil error:&error];
+        CMTime time = CMTimeSubtract(self.duration, CMTimeMakeWithSeconds(0.1, NSEC_PER_SEC));
+        if (CMTimeCompare(kCMTimeZero, time) >= 0) {
+            time = CMTimeMultiplyByFloat64(self.duration, 0.5);
+        }
+        
+        CGImageRef lastImage = [imageGenerator copyCGImageAtTime:time actualTime:nil error:&error];
         
         if (error == nil) {
             _lastImage = [UIImage imageWithCGImage:lastImage];
